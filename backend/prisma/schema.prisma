@@ -1,0 +1,89 @@
+// InterviewAI — database schema.
+// SQLite for zero-config local dev. To use PostgreSQL in production, change
+// `provider` to "postgresql" and point DATABASE_URL at your Postgres instance.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("candidate") // "candidate" | "interviewer"
+  createdAt    DateTime  @default(now())
+  sessions     Session[] @relation("CandidateSessions")
+}
+
+model Problem {
+  id          String    @id @default(cuid())
+  title       String
+  difficulty  String // "easy" | "medium" | "hard"
+  tags        String // JSON string[]
+  prompt      String
+  starterCode String // JSON Record<Language, string>
+  examples    String // JSON { input, output, explanation? }[]
+  generated   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  sessions    Session[]
+}
+
+model Session {
+  id              String        @id @default(cuid())
+  title           String
+  candidateName   String
+  interviewerName String?
+  candidateId     String?
+  candidate       User?         @relation("CandidateSessions", fields: [candidateId], references: [id])
+  problemId       String
+  problem         Problem       @relation(fields: [problemId], references: [id])
+  status          String        @default("active") // scheduled | active | completed | cancelled
+  language        String        @default("javascript")
+  score           Int?
+  durationMin     Int?
+  createdAt       DateTime      @default(now())
+  startedAt       DateTime?
+  endedAt         DateTime?
+  messages        Message[]
+  snapshot        CodeSnapshot?
+  evaluation      Evaluation?
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String // "ai" | "user" | "system"
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model CodeSnapshot {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  language  String
+  code      String
+  updatedAt DateTime @updatedAt
+}
+
+model Evaluation {
+  id            String   @id @default(cuid())
+  sessionId     String   @unique
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  overall       Int
+  correctness   Int
+  efficiency    Int
+  codeQuality   Int
+  communication Int
+  summary       String
+  strengths     String // JSON string[]
+  improvements  String // JSON string[]
+  createdAt     DateTime @default(now())
+}
