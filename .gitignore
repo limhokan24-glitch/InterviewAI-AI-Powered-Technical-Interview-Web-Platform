@@ -22,3 +22,5 @@ logs
 npm-debug.log*
 
 _recovered_conversation.txt
+
+*.tsbuildinfo

@@ -105,3 +105,14 @@ body {
 .animate-pulse-dot {
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
+
+/* Remote collaborator's caret in the shared code editor */
+.remote-cursor-caret::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  border-left: 2px solid #4ade80;
+  height: 1.1em;
+  margin-left: -1px;
+  vertical-align: text-bottom;
+}

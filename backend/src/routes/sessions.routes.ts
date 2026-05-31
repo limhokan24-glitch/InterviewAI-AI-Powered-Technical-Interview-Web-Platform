@@ -4,9 +4,10 @@ import { prisma } from "../config/db";
 import { asyncHandler, badRequest, notFound } from "../lib/errors";
 import { requireAuth } from "../lib/auth";
 import { toSession, toMessage, toEvaluation } from "../lib/serialize";
-import { streamReply, streamFollowUp, reviewCode, evaluate } from "../services/ai";
-import { runCode } from "../services/runner";
+import { streamReply, streamFollowUp, reviewCode, evaluate, analyzeIntegrity } from "../services/ai";
+import { enqueueAndRun } from "../queue/codeQueue";
 import { broadcast, emitActivity } from "../realtime/ws";
+import { cacheInvalidate } from "../lib/cache";
 
 export const sessionsRouter = Router();
 sessionsRouter.use(requireAuth);
@@ -65,6 +66,7 @@ sessionsRouter.post(
         candidateId: req.user!.sub,
       },
     });
+    await cacheInvalidate("analytics:");
     res.status(201).json(toSession(s));
   })
 );
@@ -140,17 +142,64 @@ sessionsRouter.post(
     const parsed = runSchema.safeParse(req.body);
     if (!parsed.success) throw badRequest("language and code are required");
 
-    const result = await runCode(parsed.data.language, parsed.data.code);
+    const result = await enqueueAndRun(parsed.data.language, parsed.data.code);
     emitActivity(req.params.id, "code_run", `Code executed — ${result.testsPassed}/${result.testsTotal} tests`);
-
-    // The AI follows up in the room after a run.
-    void (async () => {
-      let full = "";
-      for await (const tok of streamFollowUp(result.testsPassed ?? 0, result.testsTotal ?? 0)) full += tok;
-      await prisma.message.create({ data: { sessionId: req.params.id, role: "ai", content: full } });
-    })();
-
+    // The follow-up question is requested separately by the client via /followup
+    // (so it can stream into the chat), keeping a single source of truth.
     res.json(result);
+  })
+);
+
+// ── Cheating detection / proctoring ──────────────────────────────────────────
+
+const proctorSchema = z.object({
+  type: z.enum(["paste", "large_paste", "blur", "focus", "devtools"]),
+  detail: z.string().optional(),
+});
+
+// POST /api/sessions/:id/proctor  — log an integrity signal
+sessionsRouter.post(
+  "/:id/proctor",
+  asyncHandler(async (req, res) => {
+    await getSessionOr404(req.params.id);
+    const parsed = proctorSchema.safeParse(req.body);
+    if (!parsed.success) throw badRequest("invalid proctor event");
+    await prisma.proctorEvent.create({ data: { sessionId: req.params.id, type: parsed.data.type, detail: parsed.data.detail } });
+    res.status(204).end();
+  })
+);
+
+// GET /api/sessions/:id/integrity  — proctoring summary + risk score
+sessionsRouter.get(
+  "/:id/integrity",
+  asyncHandler(async (req, res) => {
+    await getSessionOr404(req.params.id);
+    const events = await prisma.proctorEvent.findMany({ where: { sessionId: req.params.id } });
+    res.json(analyzeIntegrity(events));
+  })
+);
+
+const followUpSchema = z.object({ passed: z.number().int().nonnegative(), total: z.number().int().nonnegative() });
+
+// POST /api/sessions/:id/followup  — streams a proactive AI follow-up after a run
+sessionsRouter.post(
+  "/:id/followup",
+  asyncHandler(async (req, res) => {
+    await getSessionOr404(req.params.id);
+    const parsed = followUpSchema.safeParse(req.body);
+    if (!parsed.success) throw badRequest("passed and total are required");
+
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    let full = "";
+    for await (const tok of streamFollowUp(parsed.data.passed, parsed.data.total)) {
+      full += tok;
+      res.write(tok);
+    }
+    await prisma.message.create({ data: { sessionId: req.params.id, role: "ai", content: full } });
+    res.end();
   })
 );
 
@@ -207,6 +256,7 @@ sessionsRouter.post(
     });
     emitActivity(s.id, "evaluation", `AI evaluation completed (${e.overall}%)`);
     broadcast(s.id, { type: "session:status", sessionId: s.id, status: "completed" });
+    await cacheInvalidate("analytics:");
 
     res.json(toEvaluation(saved));
   })

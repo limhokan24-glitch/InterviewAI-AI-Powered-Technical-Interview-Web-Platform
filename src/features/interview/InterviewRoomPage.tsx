@@ -9,6 +9,7 @@ import * as api from "@/services/api";
 import type { Language } from "@/services/types";
 import { useRealtime } from "./useRealtime";
 import { ConnectionBadge } from "./ConnectionBadge";
+import { IntegrityBadge } from "./IntegrityBadge";
 import { ProblemPanel } from "./ProblemPanel";
 import { CodeEditor } from "./CodeEditor";
 import { AIChat } from "./AIChat";
@@ -73,6 +74,7 @@ export function InterviewRoomPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <IntegrityBadge sessionId={s.id} />
           <ConnectionBadge state={state} />
           {/* Demo control: exercise the reconnect/error-handling path */}
           <Button variant="outline" size="sm" onClick={simulateDrop} title="Simulate a dropped connection">

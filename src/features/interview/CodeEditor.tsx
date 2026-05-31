@@ -44,15 +44,94 @@ export function CodeEditor({
   const [showReview, setShowReview] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
 
+  // Collaborative-editing state (unique id per client + refs to the editor).
+  const clientId = useRef("c_" + Math.random().toString(36).slice(2, 8));
+  const suppressBroadcast = useRef(false);
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
+  const remoteCursors = useRef<Map<string, any>>(new Map());
+
   // Reset editor content when switching sessions / starter code.
   useEffect(() => setCode(initialCode), [initialCode]);
+
+  // Proctoring: report when the candidate leaves the tab (possible lookup).
+  useEffect(() => {
+    const onBlur = () => void api.logProctorEvent(sessionId, "blur");
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [sessionId]);
+
+  // Collaborative editing: apply remote code changes and draw remote cursors.
+  useEffect(() => {
+    const off = realtime.on((ev) => {
+      if (ev.type === "code:update" && ev.sessionId === sessionId && ev.senderId !== clientId.current) {
+        suppressBroadcast.current = true; // applying remote edit — don't echo it
+        setCode(ev.code);
+      }
+      if (ev.type === "cursor:update" && ev.sessionId === sessionId && ev.senderId !== clientId.current) {
+        renderRemoteCursor(ev.senderId, ev.user, ev.line, ev.column);
+      }
+    });
+    return () => {
+      off();
+    };
+  }, [sessionId]);
+
+  /** Draw/move another participant's cursor as a labelled decoration. */
+  function renderRemoteCursor(senderId: string, user: string, line: number, column: number) {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+    let col = remoteCursors.current.get(senderId);
+    if (!col) {
+      col = editor.createDecorationsCollection();
+      remoteCursors.current.set(senderId, col);
+    }
+    col.set([
+      {
+        range: new monaco.Range(line, column, line, column),
+        options: {
+          beforeContentClassName: "remote-cursor-caret",
+          hoverMessage: { value: `**${user}** is editing here` },
+          stickiness: 1,
+        },
+      },
+    ]);
+  }
+
+  // Wire editor events on mount: proctoring (paste) + collaboration (cursor).
+  function handleMount(editor: any, monaco: any) {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    editor.onDidPaste((e: any) => {
+      const pasted = editor.getModel()?.getValueInRange(e.range) ?? "";
+      void api.logProctorEvent(sessionId, pasted.length > 40 ? "large_paste" : "paste");
+    });
+    editor.onDidChangeCursorPosition((e: any) => {
+      realtime.send({
+        type: "cursor:update",
+        sessionId,
+        senderId: clientId.current,
+        user: "Participant",
+        line: e.position.lineNumber,
+        column: e.position.column,
+      });
+    });
+  }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   // Debounced autosave + broadcast over the realtime channel.
   function handleChange(value: string | undefined) {
     const next = value ?? "";
     setCode(next);
+    // If this change came from applying a remote edit, don't echo it back.
+    if (suppressBroadcast.current) {
+      suppressBroadcast.current = false;
+      return;
+    }
     setSaveState("saving");
-    realtime.send({ type: "code:update", sessionId, code: next });
+    realtime.send({ type: "code:update", sessionId, code: next, senderId: clientId.current });
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       await api.saveCode(sessionId, next);
@@ -110,6 +189,7 @@ export function CodeEditor({
           language={monacoLang[language]}
           value={code}
           onChange={handleChange}
+          onMount={handleMount}
           options={{
             fontSize: 13,
             minimap: { enabled: false },

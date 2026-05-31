@@ -53,6 +53,17 @@ model Session {
   messages        Message[]
   snapshot        CodeSnapshot?
   evaluation      Evaluation?
+  proctorEvents   ProctorEvent[]
+}
+
+// Integrity / cheating-detection signals captured during an interview.
+model ProctorEvent {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type      String // paste | large_paste | blur | focus | devtools
+  detail    String?
+  at        DateTime @default(now())
 }
 
 model Message {

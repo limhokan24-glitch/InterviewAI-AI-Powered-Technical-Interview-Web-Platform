@@ -18,6 +18,8 @@ import type {
   Evaluation,
   CodeReview,
   Difficulty,
+  ProctorEventType,
+  IntegrityReport,
   DashboardStats,
   TimeseriesPoint,
   ScoreDistribution,
@@ -157,11 +159,37 @@ function persistMessage(m: ChatMessage) {
 }
 
 /**
- * Streams an AI reply token-by-token (mocking SSE / streaming completions).
- * The real implementation should call POST /sessions/:id/chat and read the
- * streamed response body chunk-by-chunk.
+ * Reads a chunked/streamed fetch response body and yields decoded text chunks.
+ * Used by the real-backend chat endpoints (which stream tokens as plain text).
+ */
+async function* streamFetch(path: string, body: object): AsyncGenerator<string> {
+  const res = await fetch(`${config.API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) throw new Error(`AI request failed (${res.status})`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (chunk) yield chunk;
+  }
+}
+
+/**
+ * Streams an AI reply token-by-token. Against the real backend this reads the
+ * streamed body of POST /sessions/:id/chat; in mock mode it generates locally.
  */
 export async function* streamAIReply(sessionId: string, userText: string): AsyncGenerator<string> {
+  if (!config.USE_MOCKS) {
+    // The backend persists both the user message and the AI reply.
+    yield* streamFetch(`/sessions/${sessionId}/chat`, { content: userText });
+    return;
+  }
   // Persist the user's message first.
   persistMessage({
     id: "m_" + Math.random().toString(36).slice(2, 8),
@@ -195,6 +223,10 @@ export async function* streamAIReply(sessionId: string, userText: string): Async
  * Real impl: POST /sessions/:id/followup with the run result as context.
  */
 export async function* streamAIFollowUp(sessionId: string, passed: number, total: number): AsyncGenerator<string> {
+  if (!config.USE_MOCKS) {
+    yield* streamFetch(`/sessions/${sessionId}/followup`, { passed, total });
+    return;
+  }
   await sleep(500);
   const allPassed = passed === total;
   const reply = allPassed
@@ -328,6 +360,38 @@ export async function getEvaluation(sessionId: string): Promise<Evaluation> {
       "Verify the solution against examples before running",
     ],
   };
+}
+
+// ── Cheating detection / proctoring ──────────────────────────────────────────
+
+const proctorStore: Record<string, { type: string }[]> = {};
+
+function analyzeIntegrityLocal(events: { type: string }[]): IntegrityReport {
+  const largePastes = events.filter((e) => e.type === "large_paste").length;
+  const smallPastes = events.filter((e) => e.type === "paste").length;
+  const tabSwitches = events.filter((e) => e.type === "blur").length;
+  const signals: string[] = [];
+  let risk = 0;
+  if (largePastes > 0) { risk += largePastes * 28; signals.push(`${largePastes} large paste${largePastes > 1 ? "s" : ""} detected (possible copied solution)`); }
+  if (smallPastes > 0) risk += smallPastes * 6;
+  if (tabSwitches >= 3) { risk += tabSwitches * 7; signals.push(`${tabSwitches} times the candidate left the interview tab`); }
+  risk = Math.min(100, risk);
+  const level: IntegrityReport["level"] = risk >= 60 ? "high" : risk >= 25 ? "medium" : "low";
+  if (signals.length === 0) signals.push("No integrity concerns detected");
+  return { risk, level, signals, pasteCount: largePastes + smallPastes, tabSwitches };
+}
+
+// POST /sessions/:id/proctor
+export async function logProctorEvent(sessionId: string, type: ProctorEventType, detail?: string): Promise<void> {
+  if (!config.USE_MOCKS) { await http(`/sessions/${sessionId}/proctor`, { method: "POST", body: JSON.stringify({ type, detail }) }); return; }
+  (proctorStore[sessionId] ??= []).push({ type });
+}
+
+// GET /sessions/:id/integrity
+export async function getIntegrity(sessionId: string): Promise<IntegrityReport> {
+  if (!config.USE_MOCKS) return http(`/sessions/${sessionId}/integrity`);
+  await sleep(150);
+  return analyzeIntegrityLocal(proctorStore[sessionId] ?? []);
 }
 
 // ── Analytics ────────────────────────────────────────────────────────────────

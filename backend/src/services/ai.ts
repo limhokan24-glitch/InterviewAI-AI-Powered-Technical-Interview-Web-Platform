@@ -7,6 +7,43 @@ import { env } from "../config/env";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Calls Groq's OpenAI-compatible API and returns the full text. */
+async function groqComplete(system: string, user: string, maxTokens = 400): Promise<string> {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: env.GROQ_MODEL,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq API ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+/** Calls Google's Gemini API and returns the full text (non-streaming). */
+async function geminiComplete(system: string, user: string, maxTokens = 400): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+    }),
+  });
+  if (!res.ok) throw new Error(`Gemini API ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { candidates?: { content?: { parts?: { text: string }[] } }[] };
+  return (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text).join("");
+}
+
 /** Calls Anthropic's Messages API and returns the full text (non-streaming). */
 async function anthropicComplete(system: string, user: string, maxTokens = 400): Promise<string> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -28,6 +65,19 @@ async function anthropicComplete(system: string, user: string, maxTokens = 400):
   return data.content.map((c) => c.text).join("");
 }
 
+/** True if any real LLM provider is configured. */
+function hasRealProvider(): boolean {
+  return Boolean(env.GROQ_API_KEY || env.GEMINI_API_KEY || env.ANTHROPIC_API_KEY);
+}
+
+/** Routes a completion to whichever provider is configured (Groq preferred). */
+async function complete(system: string, user: string, maxTokens = 400): Promise<string> {
+  if (env.GROQ_API_KEY) return groqComplete(system, user, maxTokens);
+  if (env.GEMINI_API_KEY) return geminiComplete(system, user, maxTokens);
+  if (env.ANTHROPIC_API_KEY) return anthropicComplete(system, user, maxTokens);
+  throw new Error("No AI provider configured");
+}
+
 /** Yields a string token-by-token to simulate a live stream for the UI. */
 async function* streamText(text: string): AsyncGenerator<string> {
   for (const tok of text.split(/(\s+)/)) {
@@ -41,11 +91,18 @@ const SYSTEM_INTERVIEWER =
 
 /** Streams an AI interviewer reply to a candidate message. */
 export async function* streamReply(userText: string, history: { role: string; content: string }[] = []): AsyncGenerator<string> {
-  if (env.ANTHROPIC_API_KEY) {
-    const ctx = history.slice(-6).map((m) => `${m.role}: ${m.content}`).join("\n");
-    const text = await anthropicComplete(SYSTEM_INTERVIEWER, `${ctx}\ncandidate: ${userText}`);
-    yield* streamText(text);
-    return;
+  if (hasRealProvider()) {
+    try {
+      const ctx = history.slice(-6).map((m) => `${m.role}: ${m.content}`).join("\n");
+      const text = await complete(SYSTEM_INTERVIEWER, `${ctx}\ncandidate: ${userText}`);
+      if (text.trim()) {
+        yield* streamText(text);
+        return;
+      }
+    } catch (e) {
+      // Network/rate-limit/key error → degrade gracefully to the fallback.
+      console.warn("AI provider failed, using fallback:", (e as Error).message);
+    }
   }
   yield* streamText(fallbackReply(userText));
 }
@@ -159,6 +216,38 @@ export function evaluate(passedRatio = 0.85): EvaluationResult {
       "Verify against examples before running",
     ],
   };
+}
+
+export interface IntegrityReport {
+  risk: number; // 0-100
+  level: "low" | "medium" | "high";
+  signals: string[];
+  pasteCount: number;
+  tabSwitches: number;
+}
+
+/** Scores interview integrity from proctoring signals (paste / focus-loss). */
+export function analyzeIntegrity(events: { type: string }[]): IntegrityReport {
+  const largePastes = events.filter((e) => e.type === "large_paste").length;
+  const smallPastes = events.filter((e) => e.type === "paste").length;
+  const tabSwitches = events.filter((e) => e.type === "blur").length;
+  const pasteCount = largePastes + smallPastes;
+
+  const signals: string[] = [];
+  let risk = 0;
+  if (largePastes > 0) {
+    risk += largePastes * 28;
+    signals.push(`${largePastes} large paste${largePastes > 1 ? "s" : ""} detected (possible copied solution)`);
+  }
+  if (smallPastes > 0) risk += smallPastes * 6;
+  if (tabSwitches >= 3) {
+    risk += tabSwitches * 7;
+    signals.push(`${tabSwitches} times the candidate left the interview tab`);
+  }
+  risk = Math.min(100, risk);
+  const level: IntegrityReport["level"] = risk >= 60 ? "high" : risk >= 25 ? "medium" : "low";
+  if (signals.length === 0) signals.push("No integrity concerns detected");
+  return { risk, level, signals, pasteCount, tabSwitches };
 }
 
 const TOPICS = ["arrays", "strings", "graphs", "dynamic-programming", "trees"];

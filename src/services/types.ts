@@ -75,6 +75,16 @@ export interface CodeReview {
   comments: ReviewComment[];
 }
 
+export type ProctorEventType = "paste" | "large_paste" | "blur" | "focus" | "devtools";
+
+export interface IntegrityReport {
+  risk: number; // 0-100
+  level: "low" | "medium" | "high";
+  signals: string[];
+  pasteCount: number;
+  tabSwitches: number;
+}
+
 export interface Evaluation {
   sessionId: string;
   overall: number; // 0-100
@@ -124,7 +134,8 @@ export interface ActivityEvent {
 // Realtime -------------------------------------------------------------------
 
 export type WsEvent =
-  | { type: "code:update"; sessionId: string; code: string; cursor?: { line: number; column: number } }
+  | { type: "code:update"; sessionId: string; code: string; senderId?: string }
+  | { type: "cursor:update"; sessionId: string; senderId: string; user: string; line: number; column: number }
   | { type: "presence:join"; sessionId: string; user: string }
   | { type: "presence:leave"; sessionId: string; user: string }
   | { type: "session:status"; sessionId: string; status: SessionStatus }

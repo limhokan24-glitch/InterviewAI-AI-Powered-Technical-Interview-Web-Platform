@@ -1,0 +1,103 @@
+# Full InterviewAI stack: Postgres + Redis + 2 load-balanced API replicas +
+# a dedicated queue worker + nginx load balancer + the frontend SPA.
+#
+#   docker compose up --build
+#   →  app at http://localhost:5173   (API behind the load balancer)
+#
+# Set GROQ_API_KEY in your shell (or a root .env) for real AI; otherwise the
+# backend uses its built-in fallback.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: interviewai
+      POSTGRES_PASSWORD: interviewai
+      POSTGRES_DB: interviewai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interviewai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── API replica 1 (runs migrations + seed once) ──
+  backend1:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      INSTANCE_ID: backend1
+      RUN_MIGRATIONS: "true"
+      DATABASE_URL: postgresql://interviewai:interviewai@postgres:5432/interviewai
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CLIENT_ORIGIN: http://localhost:5173
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: llama-3.3-70b-versatile
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # ── API replica 2 ──
+  backend2:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      INSTANCE_ID: backend2
+      DATABASE_URL: postgresql://interviewai:interviewai@postgres:5432/interviewai
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CLIENT_ORIGIN: http://localhost:5173
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: llama-3.3-70b-versatile
+    depends_on:
+      backend1: { condition: service_started }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # ── Dedicated code-execution worker (scales independently) ──
+  worker:
+    build: ./backend
+    command: ["npm", "run", "worker"]
+    environment:
+      DATABASE_URL: postgresql://interviewai:interviewai@postgres:5432/interviewai
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  # ── API load balancer (round-robins backend1 / backend2) ──
+  lb:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/lb.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend1
+      - backend2
+
+  # ── Frontend SPA (proxies /api and /ws to the load balancer) ──
+  frontend:
+    build:
+      context: .
+      args:
+        VITE_USE_MOCKS: "false"
+        VITE_API_BASE_URL: /api
+        VITE_WS_URL: /ws
+    ports:
+      - "5173:80"
+    depends_on:
+      - lb
+
+volumes:
+  pgdata:
