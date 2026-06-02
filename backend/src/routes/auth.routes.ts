@@ -36,7 +36,9 @@ authRouter.post(
 
     const token = signToken({ sub: user.id, role: user.role, name: user.name, email: user.email });
     setAuthCookie(res, token);
-    res.status(201).json(toUser(user));
+    // Also return the token so the client can use header auth (robust across
+    // domains where third-party cookies are blocked).
+    res.status(201).json({ ...toUser(user), token });
   })
 );
 
@@ -55,7 +57,7 @@ authRouter.post(
 
     const token = signToken({ sub: user.id, role: user.role, name: user.name, email: user.email });
     setAuthCookie(res, token);
-    res.json(toUser(user));
+    res.json({ ...toUser(user), token });
   })
 );
 

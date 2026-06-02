@@ -31,12 +31,27 @@ import { problems, sessions, seedMessages, activityFeed, challengeTemplates } fr
 
 const LATENCY = 280; // simulated network latency for realism
 
-/** Thin fetch wrapper used once the real backend is wired in. */
+// ── Auth token (header-based) ────────────────────────────────────────────────
+// We use a Bearer token in localStorage rather than relying on cross-site
+// cookies, which browsers increasingly block. The token persists across reloads.
+const TOKEN_KEY = "interviewai-token";
+
+export function setToken(token: string | null) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeader(): Record<string, string> {
+  const t = localStorage.getItem(TOKEN_KEY);
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/** Thin fetch wrapper. Sends the Bearer token (and cookie, as a fallback). */
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${config.API_BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
     credentials: "include",
     ...init,
+    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers ?? {}) },
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json() as Promise<T>;
@@ -52,7 +67,11 @@ const generatedProblems: Record<string, Problem> = {}; // AI-generated challenge
 
 // POST /auth/login
 export async function login(email: string, password: string): Promise<User> {
-  if (!config.USE_MOCKS) return http("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+  if (!config.USE_MOCKS) {
+    const data = await http<User & { token?: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+    if (data.token) setToken(data.token);
+    return data;
+  }
   await sleep(LATENCY);
   if (!email || !password) throw new Error("Email and password are required.");
   const role: Role = email.toLowerCase().includes("interviewer") ? "interviewer" : "candidate";
@@ -67,7 +86,11 @@ export async function login(email: string, password: string): Promise<User> {
 
 // POST /auth/register
 export async function register(name: string, email: string, password: string, role: Role): Promise<User> {
-  if (!config.USE_MOCKS) return http("/auth/register", { method: "POST", body: JSON.stringify({ name, email, password, role }) });
+  if (!config.USE_MOCKS) {
+    const data = await http<User & { token?: string }>("/auth/register", { method: "POST", body: JSON.stringify({ name, email, password, role }) });
+    if (data.token) setToken(data.token);
+    return data;
+  }
   await sleep(LATENCY);
   if (!name || !email || !password) throw new Error("All fields are required.");
   if (password.length < 6) throw new Error("Password must be at least 6 characters.");
@@ -165,7 +188,7 @@ function persistMessage(m: ChatMessage) {
 async function* streamFetch(path: string, body: object): AsyncGenerator<string> {
   const res = await fetch(`${config.API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     credentials: "include",
     body: JSON.stringify(body),
   });

@@ -40,6 +40,7 @@ export const useAuth = create<AuthState>()(
         }
       },
       logout() {
+        api.setToken(null);
         set({ user: null });
       },
       clearError() {
