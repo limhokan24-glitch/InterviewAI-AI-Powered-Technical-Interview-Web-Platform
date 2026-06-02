@@ -19,6 +19,9 @@ export const env = {
   GROQ_MODEL: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
   REDIS_URL: process.env.REDIS_URL, // e.g. redis://localhost:6379 — enables cache, queue, pub/sub
   INSTANCE_ID: process.env.INSTANCE_ID ?? `api-${process.pid}`, // identifies the node behind the load balancer
+  // Only send the Secure cookie flag when actually served over HTTPS. Defaults
+  // off so the app works over plain HTTP (local + Docker demo); set true in prod.
+  COOKIE_SECURE: process.env.COOKIE_SECURE === "true",
   isProd: process.env.NODE_ENV === "production",
 };
 

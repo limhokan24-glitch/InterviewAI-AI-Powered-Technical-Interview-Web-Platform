@@ -20,7 +20,7 @@ export function createApp() {
   app.use(express.json({ limit: "1mb" }));
   app.use(cookieParser());
 
-  app.get("/health", (_req, res) => res.json({ ok: true, service: "interviewai-api" }));
+  app.get("/health", (_req, res) => res.json({ ok: true, service: "interviewai-api", instance: env.INSTANCE_ID }));
 
   // All API routes are under /api to match the frontend's VITE_API_BASE_URL.
   app.use("/api/auth", authRouter);

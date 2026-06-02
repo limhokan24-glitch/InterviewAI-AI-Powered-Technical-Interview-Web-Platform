@@ -21,7 +21,7 @@ export function setAuthCookie(res: Response, token: string) {
   res.cookie(COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: env.isProd,
+    secure: env.COOKIE_SECURE,
     maxAge: 7 * 24 * 3600 * 1000,
   });
 }

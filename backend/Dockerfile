@@ -14,7 +14,7 @@ COPY . .
 # The containerized stack uses PostgreSQL (local dev uses SQLite). Swap the
 # Prisma provider, then generate the client. Single schema, no duplication.
 RUN sed -i 's/provider = "sqlite"/provider = "postgresql"/' prisma/schema.prisma \
-    && npx prisma generate
+    && DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" npx prisma generate
 
 ENV NODE_ENV=production
 EXPOSE 4000
