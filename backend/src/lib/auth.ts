@@ -20,7 +20,9 @@ export function signToken(payload: JwtPayload): string {
 export function setAuthCookie(res: Response, token: string) {
   res.cookie(COOKIE, token, {
     httpOnly: true,
-    sameSite: "lax",
+    // Cross-site (frontend and backend on different domains) needs SameSite=None
+    // + Secure. Locally over HTTP we use Lax. Controlled by COOKIE_SECURE.
+    sameSite: env.COOKIE_SECURE ? "none" : "lax",
     secure: env.COOKIE_SECURE,
     maxAge: 7 * 24 * 3600 * 1000,
   });

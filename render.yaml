@@ -1,0 +1,35 @@
+# Render Blueprint — deploys the InterviewAI backend (Docker) + a Postgres DB.
+# In Render: New → Blueprint → connect this repo. Then set the two secret env
+# vars (GROQ_API_KEY, CLIENT_ORIGIN) in the dashboard after the first deploy.
+
+databases:
+  - name: interviewai-db
+    plan: free
+
+services:
+  - type: web
+    name: interviewai-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: RUN_MIGRATIONS # this instance creates tables + seeds on boot
+        value: "true"
+      - key: NODE_ENV
+        value: production
+      - key: COOKIE_SECURE # cross-site cookie (SameSite=None; Secure) over HTTPS
+        value: "true"
+      - key: JWT_SECRET # auto-generated strong secret
+        generateValue: true
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GROQ_API_KEY # SECRET — set in the Render dashboard
+        sync: false
+      - key: CLIENT_ORIGIN # set to your Vercel URL after the frontend deploys
+        sync: false
+      - key: DATABASE_URL # injected from the managed Postgres above
+        fromDatabase:
+          name: interviewai-db
+          property: connectionString
