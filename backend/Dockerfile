@@ -1,8 +1,8 @@
 # InterviewAI backend image.
 FROM node:22-alpine
 
-# Prisma needs openssl at runtime on alpine.
-RUN apk add --no-cache openssl
+# openssl: required by Prisma on alpine. python3: enables real Python code execution.
+RUN apk add --no-cache openssl python3
 
 WORKDIR /app
 
